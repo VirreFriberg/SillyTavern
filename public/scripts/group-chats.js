@@ -9,6 +9,7 @@ import {
     saveBase64AsFile,
     PAGINATION_TEMPLATE,
     waitUntilCondition,
+    getBase64Async,
 } from './utils.js';
 import { RA_CountCharTokens, humanizedDateTime, dragElement, favsToHotswap, getMessageTimeStamp } from "./RossAscends-mods.js";
 import { loadMovingUIState, sortEntitiesList } from './power-user.js';
@@ -51,7 +52,6 @@ import {
     menu_type,
     select_selected_character,
     cancelTtsPlay,
-    isMultigenEnabled,
     displayPastChats,
     sendMessageAsUser,
     getBiasStrings,
@@ -166,7 +166,7 @@ export async function getGroupChat(groupId) {
         for (let key of data) {
             chat.push(key);
         }
-        printMessages();
+        await printMessages();
     } else {
         sendSystemMessage(system_message_types.GROUP, '', { isSmallSys: true });
         if (group && Array.isArray(group.members)) {
@@ -206,7 +206,6 @@ function getFirstCharacterMessage(character) {
     mes["is_user"] = false;
     mes["is_system"] = false;
     mes["name"] = character.name;
-    mes["is_name"] = true;
     mes["send_date"] = getMessageTimeStamp();
     mes["original_avatar"] = character.avatar;
     mes["extra"] = { "gen_id": Date.now() * Math.random() * 1000000 };
@@ -558,7 +557,7 @@ async function generateGroupWrapper(by_auto_mode, type = null, params = {}) {
         }
 
         if (activatedMembers.length === 0) {
-            toastr.warning('All group members are disabled. Enable at least one to get a reply.');
+            //toastr.warning('All group members are disabled. Enable at least one to get a reply.');
 
             // Send user message as is
             const bias = getBiasStrings(userInput, type);
@@ -577,15 +576,12 @@ async function generateGroupWrapper(by_auto_mode, type = null, params = {}) {
 
             await Generate(generateType, { automatic_trigger: by_auto_mode, ...(params || {}) });
 
-            if (type !== "swipe" && type !== "impersonate" && !isMultigenEnabled() && !isStreamingEnabled()) {
+            if (type !== "swipe" && type !== "impersonate" && !isStreamingEnabled()) {
                 // update indicator and scroll down
                 typingIndicator
                     .find(".typing_indicator_name")
                     .text(characters[chId].name);
-                $("#chat").append(typingIndicator);
-                typingIndicator.show(200, function () {
-                    typingIndicator.get(0).scrollIntoView({ behavior: "smooth" });
-                });
+                typingIndicator.show();
             }
 
             // TODO: This is awful. Refactor this
@@ -596,7 +592,7 @@ async function generateGroupWrapper(by_auto_mode, type = null, params = {}) {
                 }
 
                 // if not swipe - check if message generated already
-                if (generateType === "group_chat" && !isMultigenEnabled() && chat.length == messagesBefore) {
+                if (generateType === "group_chat" && chat.length == messagesBefore) {
                     await delay(100);
                 }
                 // if swipe - see if message changed
@@ -607,13 +603,6 @@ async function generateGroupWrapper(by_auto_mode, type = null, params = {}) {
                         }
                         else {
                             break;
-                        }
-                    }
-                    else if (isMultigenEnabled()) {
-                        if (isGenerationDone) {
-                            break;
-                        } else {
-                            await delay(100);
                         }
                     }
                     else {
@@ -634,13 +623,6 @@ async function generateGroupWrapper(by_auto_mode, type = null, params = {}) {
                             break;
                         }
                     }
-                    else if (isMultigenEnabled()) {
-                        if (isGenerationDone) {
-                            break;
-                        } else {
-                            await delay(100);
-                        }
-                    }
                     else {
                         if (!$("#send_textarea").val() || $("#send_textarea").val() == userInput) {
                             await delay(100);
@@ -652,14 +634,6 @@ async function generateGroupWrapper(by_auto_mode, type = null, params = {}) {
                 }
                 else if (type === 'quiet') {
                     if (isGenerationDone) {
-                        break;
-                    } else {
-                        await delay(100);
-                    }
-                }
-                else if (isMultigenEnabled()) {
-                    if (isGenerationDone) {
-                        messagesBefore++;
                         break;
                     } else {
                         await delay(100);
@@ -681,9 +655,7 @@ async function generateGroupWrapper(by_auto_mode, type = null, params = {}) {
             }
         }
     } finally {
-        // hide and reapply the indicator to the bottom of the list
-        typingIndicator.hide(200);
-        $("#chat").append(typingIndicator);
+        typingIndicator.hide();
 
         is_group_generating = false;
         $("#send_textarea").attr("disabled", false);
@@ -821,18 +793,26 @@ function activateNaturalOrder(members, input, lastMessage, allowSelfResponses, i
 }
 
 async function deleteGroup(id) {
+    const group = groups.find((x) => x.id === id);
+
     const response = await fetch("/deletegroup", {
         method: "POST",
         headers: getRequestHeaders(),
         body: JSON.stringify({ id: id }),
     });
 
+    if (group && Array.isArray(group.chats)) {
+        for (const chatId of group.chats) {
+            await eventSource.emit(event_types.GROUP_CHAT_DELETED, chatId);
+        }
+    }
+
     if (response.ok) {
         selected_group = null;
         delete tag_map[id];
         resetChatState();
         clearChat();
-        printMessages();
+        await printMessages();
         await getCharacters();
 
         select_rm_info("group_delete", id);
@@ -1109,6 +1089,7 @@ function select_group_chats(groupId, skipAnimation) {
     $("#rm_group_restore_avatar").toggle(!!group && isValidImageUrl(group.avatar_url));
     $("#rm_group_filter").val("").trigger("input");
     $(`input[name="rm_group_activation_strategy"][value="${replyStrategy}"]`).prop('checked', true);
+    $("#rm_group_chat_name").val(groupName);
 
     if (!skipAnimation) {
         selectRightMenuWithAnimation('rm_group_chats_block');
@@ -1166,35 +1147,28 @@ async function uploadGroupAvatar(event) {
         return;
     }
 
-    const e = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = resolve;
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-    });
+    const result = await getBase64Async(file);
 
     $('#dialogue_popup').addClass('large_dialogue_popup wide_dialogue_popup');
 
-    const croppedImage = await callPopup(getCropPopup(e.target.result), 'avatarToCrop');
+    const croppedImage = await callPopup(getCropPopup(result), 'avatarToCrop');
 
     if (!croppedImage) {
         return;
     }
 
-    let thumbnail = await createThumbnail(croppedImage, 96, 144);
+    let thumbnail = await createThumbnail(croppedImage, 200, 300);
     //remove data:image/whatever;base64
     thumbnail = thumbnail.replace(/^data:image\/[a-z]+;base64,/, "");
     let _thisGroup = groups.find((x) => x.id == openGroupId);
     // filename should be group id + human readable timestamp
-    const filename = `${_thisGroup.id}_${humanizedDateTime()}`;
-    let thumbnailUrl = await saveBase64AsFile(thumbnail, openGroupId.toString(), filename, 'jpg');
+    const filename = _thisGroup ? `${_thisGroup.id}_${humanizedDateTime()}` : humanizedDateTime();
+    let thumbnailUrl = await saveBase64AsFile(thumbnail, String(openGroupId ?? ''), filename, 'jpg');
     if (!openGroupId) {
         $('#group_avatar_preview img').attr('src', thumbnailUrl);
         $('#rm_group_restore_avatar').show();
         return;
     }
-
-
 
     _thisGroup.avatar_url = thumbnailUrl;
     $("#group_avatar_preview").empty().append(getGroupAvatar(_thisGroup));
@@ -1497,6 +1471,8 @@ export async function deleteGroupChat(groupId, chatId) {
         } else {
             await createNewGroupChat(groupId);
         }
+
+        await eventSource.emit(event_types.GROUP_CHAT_DELETED, chatId);
     }
 }
 
