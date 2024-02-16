@@ -12,6 +12,7 @@ import { registerSlashCommand } from '../../slash-commands.js';
 import { OpenAITtsProvider } from './openai.js';
 import { XTTSTtsProvider } from './xtts.js';
 import { AllTalkTtsProvider } from './alltalk.js';
+import { SpeechT5TtsProvider } from './speecht5.js';
 export { talkingAnimation };
 
 const UPDATE_INTERVAL = 1000;
@@ -76,6 +77,7 @@ let ttsProviders = {
     Novel: NovelTtsProvider,
     OpenAI: OpenAITtsProvider,
     AllTalk: AllTalkTtsProvider,
+    SpeechT5: SpeechT5TtsProvider,
 };
 let ttsProvider;
 let ttsProviderName;
@@ -534,7 +536,7 @@ async function processTtsQueue() {
     }
 
     if (extension_settings.tts.narrate_quoted_only) {
-        const special_quotes = /[“”]/g; // Extend this regex to include other special quotes
+        const special_quotes = /[“”«»]/g; // Extend this regex to include other special quotes
         text = text.replace(special_quotes, '"');
         const matches = text.match(/".*?"/g); // Matches text inside double quotes, non-greedily
         const partJoiner = (ttsProvider?.separator || ' ... ');
