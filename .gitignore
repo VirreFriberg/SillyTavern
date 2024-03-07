@@ -20,12 +20,17 @@ public/stats.json
 /uploads/
 *.jsonl
 /config.conf
+/config.yaml
+/config.conf.bak
 /docker/config
+/docker/user
+/docker/extensions
 .DS_Store
 public/settings.json
 /thumbnails
 whitelist.txt
-.vscode
+.vscode/**
+!.vscode/extensions.json
 .idea/
 secrets.json
 /dist
@@ -38,3 +43,5 @@ public/assets/
 access.log
 /vectors/
 /cache/
+public/css/user.css
+/plugins/
