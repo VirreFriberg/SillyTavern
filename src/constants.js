@@ -162,6 +162,8 @@ const CHAT_COMPLETION_SOURCES = {
     MAKERSUITE: 'makersuite',
     MISTRALAI: 'mistralai',
     CUSTOM: 'custom',
+    COHERE: 'cohere',
+    PERPLEXITY: 'perplexity',
 };
 
 const UPLOADS_PATH = './uploads';
@@ -207,7 +209,7 @@ const DREAMGEN_KEYS = [
     'presence_penalty',
     'stop',
     'stream',
-    'minimum_message_content_tokens'
+    'minimum_message_content_tokens',
 ];
 
 // https://docs.together.ai/reference/completions
@@ -242,8 +244,8 @@ const OLLAMA_KEYS = [
     'mirostat_eta',
 ];
 
-const AVATAR_WIDTH = 400;
-const AVATAR_HEIGHT = 600;
+const AVATAR_WIDTH = 512;
+const AVATAR_HEIGHT = 768;
 
 const OPENROUTER_HEADERS = {
     'HTTP-Referer': 'https://sillytavern.app',

@@ -10,10 +10,9 @@ import {
     eventSource,
     event_types,
     getCurrentChatId,
-    printCharacters,
+    printCharactersDebounced,
     setCharacterId,
     setEditedMessageId,
-    renderTemplate,
     chat,
     getFirstDisplayedMessageId,
     showMoreMessages,
@@ -21,6 +20,8 @@ import {
     saveChatConditional,
     setAnimationDuration,
     ANIMATION_DURATION_DEFAULT,
+    setActiveGroup,
+    setActiveCharacter,
 } from '../script.js';
 import { isMobile, initMovingUI, favsToHotswap } from './RossAscends-mods.js';
 import {
@@ -34,9 +35,10 @@ import {
 } from './instruct-mode.js';
 
 import { registerSlashCommand } from './slash-commands.js';
-import { tags } from './tags.js';
+import { tag_map, tags } from './tags.js';
 import { tokenizers } from './tokenizers.js';
 import { BIAS_CACHE } from './logit-bias.js';
+import { renderTemplateAsync } from './templates.js';
 
 import { countOccurrences, debounce, delay, download, getFileText, isOdd, resetScrollHeight, shuffle, sortMoments, stringToRange, timestampToMoment } from './utils.js';
 
@@ -116,6 +118,8 @@ let power_user = {
     markdown_escape_strings: '',
     chat_truncation: 100,
     streaming_fps: 30,
+    smooth_streaming: false,
+    smooth_streaming_speed: 50,
 
     ui_mode: ui_mode.POWER,
     fast_ui_mode: true,
@@ -195,19 +199,27 @@ let power_user = {
         preset: 'Alpaca',
         system_prompt: 'Below is an instruction that describes a task. Write a response that appropriately completes the request.\n\nWrite {{char}}\'s next reply in a fictional roleplay chat between {{user}} and {{char}}.\n',
         input_sequence: '### Instruction:',
+        input_suffix: '',
         output_sequence: '### Response:',
+        output_suffix: '',
+        system_sequence: '',
+        system_suffix: '',
+        last_system_sequence: '',
         first_output_sequence: '',
         last_output_sequence: '',
         system_sequence_prefix: '',
         system_sequence_suffix: '',
         stop_sequence: '',
-        separator_sequence: '',
         wrap: true,
         macro: true,
         names: false,
         names_force_groups: true,
         activation_regex: '',
         bind_to_context: false,
+        user_alignment_message: '',
+        system_same_as_user: false,
+        /** @deprecated Use output_suffix instead */
+        separator_sequence: '',
     },
 
     default_context: 'Default',
@@ -235,6 +247,8 @@ let power_user = {
     encode_tags: false,
     servers: [],
     bogus_folders: false,
+    zoomed_avatar_magnification: false,
+    show_tag_filters: false,
     aux_field: 'character_version',
     restore_user_input: true,
     reduced_motion: false,
@@ -242,6 +256,8 @@ let power_user = {
     auto_connect: false,
     auto_load_chat: false,
     forbid_external_images: false,
+    external_media_allowed_overrides: [],
+    external_media_forbidden_overrides: [],
 };
 
 let themes = [];
@@ -629,6 +645,7 @@ async function CreateZenSliders(elmnt) {
     if (sliderID == 'min_temp_textgenerationwebui' ||
         sliderID == 'max_temp_textgenerationwebui' ||
         sliderID == 'dynatemp_exponent_textgenerationwebui' ||
+        sliderID == 'smoothing_curve_textgenerationwebui' ||
         sliderID == 'smoothing_factor_textgenerationwebui') {
         decimals = 2;
     }
@@ -689,6 +706,7 @@ async function CreateZenSliders(elmnt) {
         sliderID == 'top_k' ||
         sliderID == 'rep_pen_slope' ||
         sliderID == 'smoothing_factor_textgenerationwebui' ||
+        sliderID == 'smoothing_curve_textgenerationwebui' ||
         sliderID == 'min_length_textgenerationwebui') {
         offVal = 0;
     }
@@ -942,6 +960,9 @@ function peekSpoilerMode() {
 
 
 function switchMovingUI() {
+    $('.drawer-content.maximized').each(function () {
+        $(this).find('.inline-drawer-maximize').trigger('click');
+    });
     const movingUI = localStorage.getItem(storage_keys.movingUI);
     power_user.movingUI = movingUI === null ? false : movingUI == 'true';
     $('body').toggleClass('movingUI', power_user.movingUI);
@@ -1280,7 +1301,14 @@ async function applyTheme(name) {
             key: 'bogus_folders',
             action: async () => {
                 $('#bogus_folders').prop('checked', power_user.bogus_folders);
-                await printCharacters(true);
+                printCharactersDebounced();
+            },
+        },
+        {
+            key: 'zoomed_avatar_magnification',
+            action: async () => {
+                $('#zoomed_avatar_magnification').prop('checked', power_user.zoomed_avatar_magnification);
+                printCharactersDebounced();
             },
         },
         {
@@ -1343,8 +1371,8 @@ export function registerDebugFunction(functionId, name, description, func) {
     debug_functions.push({ functionId, name, description, func });
 }
 
-function showDebugMenu() {
-    const template = renderTemplate('debug', { functions: debug_functions });
+async function showDebugMenu() {
+    const template = await renderTemplateAsync('debug', { functions: debug_functions });
     callPopup(template, 'text', '', { wide: true, large: true });
 }
 
@@ -1478,6 +1506,7 @@ function loadPowerUserSettings(settings, data) {
     $('#auto_fix_generated_markdown').prop('checked', power_user.auto_fix_generated_markdown);
     $('#auto_scroll_chat_to_bottom').prop('checked', power_user.auto_scroll_chat_to_bottom);
     $('#bogus_folders').prop('checked', power_user.bogus_folders);
+    $('#zoomed_avatar_magnification').prop('checked', power_user.zoomed_avatar_magnification);
     $(`#tokenizer option[value="${power_user.tokenizer}"]`).attr('selected', true);
     $(`#send_on_enter option[value=${power_user.send_on_enter}]`).attr('selected', true);
     $('#import_card_tags').prop('checked', power_user.import_card_tags);
@@ -1528,6 +1557,9 @@ function loadPowerUserSettings(settings, data) {
 
     $('#streaming_fps').val(power_user.streaming_fps);
     $('#streaming_fps_counter').val(power_user.streaming_fps);
+
+    $('#smooth_streaming').prop('checked', power_user.smooth_streaming);
+    $('#smooth_streaming_speed').val(power_user.smooth_streaming_speed);
 
     $('#font_scale').val(power_user.font_scale);
     $('#font_scale_counter').val(power_user.font_scale);
@@ -1919,7 +1951,9 @@ export function renderStoryString(params) {
 
         // add a newline to the end of the story string if it doesn't have one
         if (output.length > 0 && !output.endsWith('\n')) {
-            output += '\n';
+            if (!power_user.instruct.enabled || power_user.instruct.wrap) {
+                output += '\n';
+            }
         }
 
         return output;
@@ -1987,6 +2021,45 @@ function sortEntitiesList(entities) {
 async function updateTheme() {
     await saveTheme(power_user.theme);
     toastr.success('Theme saved.');
+}
+
+async function deleteTheme() {
+    const themeName = power_user.theme;
+
+    if (!themeName) {
+        toastr.info('No theme selected.');
+        return;
+    }
+
+    const confirm = await callPopup(`Are you sure you want to delete the theme "${themeName}"?`, 'confirm', '', { okButton: 'Yes' });
+
+    if (!confirm) {
+        return;
+    }
+
+    const response = await fetch('/api/themes/delete', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ name: themeName }),
+    });
+
+    if (!response.ok) {
+        toastr.error('Failed to delete theme. Check the console for more information.');
+        return;
+    }
+
+    const themeIndex = themes.findIndex(x => x.name == themeName);
+
+    if (themeIndex !== -1) {
+        themes.splice(themeIndex, 1);
+        $(`#themes option[value="${themeName}"]`).remove();
+        power_user.theme = themes[0]?.name;
+        saveSettingsDebounced();
+        if (power_user.theme) {
+            await applyTheme(power_user.theme);
+        }
+        toastr.success('Theme deleted.');
+    }
 }
 
 /**
@@ -2084,11 +2157,12 @@ async function saveTheme(name = undefined) {
         hotswap_enabled: power_user.hotswap_enabled,
         custom_css: power_user.custom_css,
         bogus_folders: power_user.bogus_folders,
+        zoomed_avatar_magnification: power_user.zoomed_avatar_magnification,
         reduced_motion: power_user.reduced_motion,
         compact_input_area: power_user.compact_input_area,
     };
 
-    const response = await fetch('/savetheme', {
+    const response = await fetch('/api/themes/save', {
         method: 'POST',
         headers: getRequestHeaders(),
         body: JSON.stringify(theme),
@@ -2130,7 +2204,7 @@ async function saveMovingUI() {
     };
     console.log(movingUIPreset);
 
-    const response = await fetch('/savemovingui', {
+    const response = await fetch('/api/moving-ui/save', {
         method: 'POST',
         headers: getRequestHeaders(),
         body: JSON.stringify(movingUIPreset),
@@ -2159,6 +2233,22 @@ async function saveMovingUI() {
     }
 }
 
+/**
+ * Resets the movable styles of the given element to their unset values.
+ * @param {string} id Element ID
+ */
+export function resetMovableStyles(id) {
+    const panelStyles = ['top', 'left', 'right', 'bottom', 'height', 'width', 'margin'];
+
+    const panel = document.getElementById(id);
+
+    if (panel) {
+        panelStyles.forEach((style) => {
+            panel.style[style] = '';
+        });
+    }
+}
+
 async function resetMovablePanels(type) {
     const panelIds = [
         'sheld',
@@ -2170,6 +2260,8 @@ async function resetMovablePanels(type) {
         'groupMemberListPopout',
         'summaryExtensionPopout',
         'gallery',
+        'logprobsViewer',
+        'cfgConfig',
     ];
 
     const panelStyles = ['top', 'left', 'right', 'bottom', 'height', 'width', 'margin'];
@@ -2235,10 +2327,68 @@ function doNewChat() {
     }, 1);
 }
 
-async function doRandomChat() {
+/**
+ * Finds the ID of the tag with the given name.
+ * @param {string} name
+ * @returns {string} The ID of the tag with the given name.
+ */
+function findTagIdByName(name) {
+    const matchTypes = [
+        (a, b) => a === b,
+        (a, b) => a.startsWith(b),
+        (a, b) => a.includes(b),
+    ];
+
+    // Only get tags that contain at least one record in the tag_map
+    const liveTagIds = new Set(Object.values(tag_map).flat());
+    const liveTags = tags.filter(x => liveTagIds.has(x.id));
+
+    const exactNameMatchIndex = liveTags.map(x => x.name.toLowerCase()).indexOf(name.toLowerCase());
+
+    if (exactNameMatchIndex !== -1) {
+        return liveTags[exactNameMatchIndex].id;
+    }
+
+    for (const matchType of matchTypes) {
+        const index = liveTags.findIndex(x => matchType(x.name.toLowerCase(), name.toLowerCase()));
+        if (index !== -1) {
+            return liveTags[index].id;
+        }
+    }
+}
+
+async function doRandomChat(_, tagName) {
+    /**
+     * Gets the ID of a random character.
+     * @returns {string} The order index of the randomly selected character.
+     */
+    function getRandomCharacterId() {
+        if (!tagName) {
+            return Math.floor(Math.random() * characters.length).toString();
+        }
+
+        const tagId = findTagIdByName(tagName);
+        const taggedCharacters = Object.entries(tag_map)
+            .filter(x => x[1].includes(tagId)) // Get only records that include the tag
+            .map(x => x[0]) // Map the character avatar
+            .filter(x => characters.find(y => y.avatar === x)); // Filter out characters that don't exist
+        const randomCharacter = taggedCharacters[Math.floor(Math.random() * taggedCharacters.length)];
+        const randomIndex =  characters.findIndex(x => x.avatar === randomCharacter);
+        if (randomIndex === -1) {
+            return;
+        }
+        return randomIndex.toString();
+    }
+
     resetSelectedGroup();
-    const characterId = Math.floor(Math.random() * characters.length).toString();
+    const characterId = getRandomCharacterId();
+    if (!characterId) {
+        toastr.error('No characters found');
+        return;
+    }
     setCharacterId(characterId);
+    setActiveCharacter(characters[characterId]?.avatar);
+    setActiveGroup(null);
     await delay(1);
     await reloadCurrentChat();
     return characters[characterId]?.name;
@@ -2282,8 +2432,10 @@ async function doMesCut(_, text) {
 
     let totalMesToCut = (range.end - range.start) + 1;
     let mesIDToCut = range.start;
+    let cutText = '';
 
     for (let i = 0; i < totalMesToCut; i++) {
+        cutText += (chat[mesIDToCut]?.mes || '') + '\n';
         let done = false;
         let mesToCut = $('#chat').find(`.mes[mesid=${mesIDToCut}]`);
 
@@ -2304,6 +2456,8 @@ async function doMesCut(_, text) {
             await delay(1);
         }
     }
+
+    return cutText;
 }
 
 async function doDelMode(_, text) {
@@ -2680,23 +2834,44 @@ export function getCustomStoppingStrings(limit = undefined) {
     return strings;
 }
 
+export function forceCharacterEditorTokenize() {
+    $('[data-token-counter]').each(function () {
+        $(document.getElementById($(this).data('token-counter'))).data('last-value-hash', '');
+    });
+    $('#rm_ch_create_block').trigger('input');
+    $('#character_popup').trigger('input');
+}
+
 $(document).ready(() => {
+    const adjustAutocompleteDebounced = debounce(() => {
+        $('.ui-autocomplete-input').each(function () {
+            const isOpen = $(this).autocomplete('widget')[0].style.display !== 'none';
+            if (isOpen) {
+                $(this).autocomplete('search');
+            }
+        });
+    });
 
-    $(window).on('resize', async () => {
-        if (isMobile()) {
-            return;
-        }
-
-        //console.log('Window resized!');
+    const reportZoomLevelDebounced = debounce(() => {
         const zoomLevel = Number(window.devicePixelRatio).toFixed(2);
         const winWidth = window.innerWidth;
         const winHeight = window.innerHeight;
         console.debug(`Zoom: ${zoomLevel}, X:${winWidth}, Y:${winHeight}`);
+    });
+
+    $(window).on('resize', async () => {
+        adjustAutocompleteDebounced();
+        setHotswapsDebounced();
+
+        if (isMobile()) {
+            return;
+        }
+
+        reportZoomLevelDebounced();
+
         if (Object.keys(power_user.movingUIState).length > 0) {
             resetMovablePanels('resize');
         }
-        // Adjust layout and styling here
-        setHotswapsDebounced();
     });
 
     // Settings that go to settings.json
@@ -2867,6 +3042,16 @@ $(document).ready(() => {
         saveSettingsDebounced();
     });
 
+    $('#smooth_streaming').on('input', function () {
+        power_user.smooth_streaming = !!$(this).prop('checked');
+        saveSettingsDebounced();
+    });
+
+    $('#smooth_streaming_speed').on('input', function () {
+        power_user.smooth_streaming_speed = Number($('#smooth_streaming_speed').val());
+        saveSettingsDebounced();
+    });
+
     $('input[name="font_scale"]').on('input', async function (e) {
         power_user.font_scale = Number(e.target.value);
         $('#font_scale_counter').val(power_user.font_scale);
@@ -2968,6 +3153,7 @@ $(document).ready(() => {
 
     $('#ui-preset-save-button').on('click', () => saveTheme());
     $('#ui-preset-update-button').on('click', () => updateTheme());
+    $('#ui-preset-delete-button').on('click', () => deleteTheme());
     $('#movingui-preset-save-button').on('click', saveMovingUI);
 
     $('#never_resize_avatars').on('input', function () {
@@ -2977,7 +3163,7 @@ $(document).ready(() => {
 
     $('#show_card_avatar_urls').on('input', function () {
         power_user.show_card_avatar_urls = !!$(this).prop('checked');
-        printCharacters();
+        printCharactersDebounced();
         saveSettingsDebounced();
     });
 
@@ -3000,7 +3186,7 @@ $(document).ready(() => {
         power_user.sort_field = $(this).find(':selected').data('field');
         power_user.sort_order = $(this).find(':selected').data('order');
         power_user.sort_rule = $(this).find(':selected').data('rule');
-        printCharacters();
+        printCharactersDebounced();
         saveSettingsDebounced();
     });
 
@@ -3067,8 +3253,7 @@ $(document).ready(() => {
         saveSettingsDebounced();
 
         // Trigger character editor re-tokenize
-        $('#rm_ch_create_block').trigger('input');
-        $('#character_popup').trigger('input');
+        forceCharacterEditorTokenize();
     });
 
     $('#send_on_enter').on('change', function () {
@@ -3295,17 +3480,22 @@ $(document).ready(() => {
     });
 
     $('#bogus_folders').on('input', function () {
-        const value = !!$(this).prop('checked');
-        power_user.bogus_folders = value;
+        power_user.bogus_folders = !!$(this).prop('checked');
+        printCharactersDebounced();
         saveSettingsDebounced();
-        printCharacters(true);
+    });
+
+    $('#zoomed_avatar_magnification').on('input', function () {
+        power_user.zoomed_avatar_magnification = !!$(this).prop('checked');
+        printCharactersDebounced();
+        saveSettingsDebounced();
     });
 
     $('#aux_field').on('change', function () {
         const value = $(this).find(':selected').val();
         power_user.aux_field = String(value);
+        printCharactersDebounced();
         saveSettingsDebounced();
-        printCharacters(false);
     });
 
     $('#restore_user_input').on('input', function () {
@@ -3388,9 +3578,9 @@ $(document).ready(() => {
 
     registerSlashCommand('vn', toggleWaifu, [], '– swaps Visual Novel Mode On/Off', false, true);
     registerSlashCommand('newchat', doNewChat, [], '– start a new chat with current character', true, true);
-    registerSlashCommand('random', doRandomChat, [], '– start a new chat with a random character', true, true);
+    registerSlashCommand('random', doRandomChat, [], '<span class="monospace">(optional tag name)</span> – start a new chat with a random character. If an argument is provided, only considers characters that have the specified tag.', true, true);
     registerSlashCommand('delmode', doDelMode, ['del'], '<span class="monospace">(optional number)</span> – enter message deletion mode, and auto-deletes last N messages if numeric argument is provided', true, true);
-    registerSlashCommand('cut', doMesCut, [], '<span class="monospace">(number or range)</span> – cuts the specified message or continuous chunk from the chat, e.g. <tt>/cut 0-10</tt>. Ranges are inclusive!', true, true);
+    registerSlashCommand('cut', doMesCut, [], '<span class="monospace">(number or range)</span> – cuts the specified message or continuous chunk from the chat, e.g. <tt>/cut 0-10</tt>. Ranges are inclusive! Returns the text of cut messages separated by a newline.', true, true);
     registerSlashCommand('resetpanels', doResetPanels, ['resetui'], '– resets UI panels to original state.', true, true);
     registerSlashCommand('bgcol', setAvgBG, [], '– WIP test of auto-bg avg coloring', true, true);
     registerSlashCommand('theme', setThemeCallback, [], '<span class="monospace">(name)</span> – sets a UI theme by name', true, true);
